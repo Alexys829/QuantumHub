@@ -1,0 +1,15 @@
+{
+  "app": "QuantumHub",
+  "version": "1",
+  "servers": [
+    {
+      "name": "Server",
+      "host": "192.168.122.174",
+      "port": 22,
+      "username": "user",
+      "auth_method": "password",
+      "key_path": null,
+      "docker_port": 2375
+    }
+  ]
+}

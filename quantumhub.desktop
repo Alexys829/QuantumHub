@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=QuantumHub
+Comment=Docker, System & VM Manager
+Exec=quantumhub
+Icon=quantumhub
+Categories=System;Utility;
+Terminal=false
