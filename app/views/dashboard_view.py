@@ -378,6 +378,20 @@ class DashboardView(QWidget):
 
         self._layout.addLayout(mem_row)
 
+        # ── Temperature section ───────────────────────────────
+        temp_title = QLabel("\U0001F321  Temperatures")
+        temp_title.setStyleSheet(
+            "font-size: 15px; font-weight: bold; color: #e0e0e0;"
+        )
+        self._layout.addWidget(temp_title)
+
+        self._temp_container = QWidget()
+        self._temp_grid = QGridLayout(self._temp_container)
+        self._temp_grid.setSpacing(8)
+        self._temp_grid.setContentsMargins(0, 0, 0, 0)
+        self._layout.addWidget(self._temp_container)
+        self._temp_cards: list[dict] = []
+
         # ── Network section (2 independent rows) ────────────────
         net_title = QLabel("\U0001F310  Network")
         net_title.setStyleSheet(
@@ -559,6 +573,7 @@ class DashboardView(QWidget):
     def _on_metrics(self, data: dict) -> None:
         self._update_cpu(data)
         self._update_memory(data)
+        self._update_temperatures(data)
         self._update_network(data)
         self._update_disk(data)
 
@@ -638,6 +653,95 @@ class DashboardView(QWidget):
             )
         else:
             self._swap_gauge.set_value(0, "No swap")
+
+    # ── Temperatures ────────────────────────────────────────
+
+    def _update_temperatures(self, data: dict) -> None:
+        sensors: list[dict] = data.get("temperatures", [])
+        if not sensors:
+            return
+
+        if len(sensors) != len(self._temp_cards):
+            while self._temp_grid.count():
+                item = self._temp_grid.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            self._temp_cards.clear()
+
+            cols = 4
+            for i, sensor in enumerate(sensors):
+                card = self._make_temp_card(sensor)
+                self._temp_grid.addWidget(card["frame"], i // cols, i % cols)
+                self._temp_cards.append(card)
+        else:
+            for i, sensor in enumerate(sensors):
+                self._update_temp_card(self._temp_cards[i], sensor)
+
+    def _make_temp_card(self, sensor: dict) -> dict:
+        frame = QFrame()
+        frame.setObjectName("dashboardCard")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(4)
+
+        chip_lbl = QLabel(sensor["chip"].upper())
+        chip_lbl.setObjectName("cardTitle")
+        layout.addWidget(chip_lbl)
+
+        label_lbl = QLabel(sensor["label"])
+        label_lbl.setStyleSheet("color: #bbbbbb; font-size: 11px;")
+        layout.addWidget(label_lbl)
+
+        temp_lbl = QLabel()
+        temp_lbl.setStyleSheet("font-size: 22px; font-weight: bold;")
+        layout.addWidget(temp_lbl)
+
+        thresh_lbl = QLabel()
+        thresh_lbl.setStyleSheet("color: #666666; font-size: 10px;")
+        layout.addWidget(thresh_lbl)
+
+        card = {
+            "frame": frame,
+            "chip_lbl": chip_lbl,
+            "label_lbl": label_lbl,
+            "temp_lbl": temp_lbl,
+            "thresh_lbl": thresh_lbl,
+        }
+        self._update_temp_card(card, sensor)
+        return card
+
+    def _update_temp_card(self, card: dict, sensor: dict) -> None:
+        temp = sensor["temp"]
+        high = sensor.get("high")
+        crit = sensor.get("crit")
+        color = self._temp_color(temp, high, crit)
+
+        card["chip_lbl"].setText(sensor["chip"].upper())
+        card["label_lbl"].setText(sensor["label"])
+        card["temp_lbl"].setText(f"{temp:.1f}\u00B0C")
+        card["temp_lbl"].setStyleSheet(
+            f"font-size: 22px; font-weight: bold; color: {color};"
+        )
+
+        parts = []
+        if high is not None:
+            parts.append(f"High: {high:.0f}\u00B0C")
+        if crit is not None:
+            parts.append(f"Crit: {crit:.0f}\u00B0C")
+        card["thresh_lbl"].setText("  |  ".join(parts) if parts else "")
+
+    @staticmethod
+    def _temp_color(temp: float, high: float | None, crit: float | None) -> str:
+        if crit is not None and crit > 0 and temp >= crit * 0.9:
+            return "#f48771"
+        if high is not None and high > 0 and temp >= high * 0.75:
+            return "#d29922"
+        if high is None and crit is None:
+            if temp >= 80:
+                return "#f48771"
+            if temp >= 60:
+                return "#d29922"
+        return "#2ea043"
 
     # ── Network ───────────────────────────────────────────────
 

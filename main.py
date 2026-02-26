@@ -20,6 +20,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setStyle("Fusion")
+    app.setQuitOnLastWindowClosed(False)
 
     # Load global stylesheet
     if getattr(sys, 'frozen', False):

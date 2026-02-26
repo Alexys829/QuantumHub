@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import sys
 import time
+from pathlib import Path
 
 from PyQt6.QtCore import QTimer
+from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -10,9 +13,11 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QPushButton,
     QStackedWidget,
     QStatusBar,
+    QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
@@ -327,6 +332,11 @@ class MainWindow(QMainWindow):
             if hasattr(ctrl, "operation_error"):
                 ctrl.operation_error.connect(self._handle_sudo_error)
 
+        # -- System tray icon --
+        self._setup_tray_icon()
+        self._tray_metrics: dict = {}
+        self._system_ctrl.metrics_updated.connect(self._on_tray_metrics)
+
         # -- Auto-connect local --
         self._try_connect_local()
 
@@ -589,11 +599,126 @@ class MainWindow(QMainWindow):
             return True
         return False
 
-    def closeEvent(self, event) -> None:
-        self._poll_timer.stop()
-        self._system_ctrl.stop_metrics_polling(wait=True)
-        self._conn_manager.shutdown()
-        from app.models.database import Database
+    # ── System tray ────────────────────────────────────────────
 
-        Database.instance().close()
-        super().closeEvent(event)
+    def _setup_tray_icon(self) -> None:
+        if getattr(sys, "frozen", False):
+            icon_path = Path(sys._MEIPASS) / "quantumhub.png"
+        else:
+            icon_path = Path(__file__).resolve().parent.parent.parent / "quantumhub.png"
+        icon = QIcon(str(icon_path))
+
+        self._tray = QSystemTrayIcon(icon, self)
+        self._tray.setToolTip(APP_NAME)
+        self._tray.activated.connect(self._on_tray_activated)
+
+        # Build context menu (right-click)
+        self._tray_menu = QMenu()
+        self._tray_cpu_action = QAction("CPU: -", self)
+        self._tray_cpu_action.setEnabled(False)
+        self._tray_mem_action = QAction("RAM: -", self)
+        self._tray_mem_action.setEnabled(False)
+        self._tray_temp_separator = self._tray_menu.addSeparator()
+
+        self._tray_menu.addAction(self._tray_cpu_action)
+        self._tray_menu.addAction(self._tray_mem_action)
+        self._tray_menu.addSeparator()
+
+        # Temperature entries (dynamic)
+        self._tray_temp_actions: list[QAction] = []
+        self._tray_temp_end_separator = self._tray_menu.addSeparator()
+
+        show_action = QAction("Apri QuantumHub", self)
+        show_action.triggered.connect(self._tray_show_window)
+        self._tray_menu.addAction(show_action)
+
+        quit_action = QAction("Esci", self)
+        quit_action.triggered.connect(self._tray_quit)
+        self._tray_menu.addAction(quit_action)
+
+        self._tray.setContextMenu(self._tray_menu)
+        self._tray.show()
+
+    def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self._tray_show_window()
+
+    def _tray_show_window(self) -> None:
+        self.showNormal()
+        self.activateWindow()
+        self.raise_()
+
+    def _tray_quit(self) -> None:
+        self._really_quit = True
+        self.close()
+
+    def _on_tray_metrics(self, data: dict) -> None:
+        self._tray_metrics = data
+        self._refresh_tray_menu()
+
+    @staticmethod
+    def _fmt_bytes_short(b: int | float) -> str:
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if abs(b) < 1024:
+                return f"{b:.1f} {unit}"
+            b /= 1024
+        return f"{b:.1f} PB"
+
+    def _refresh_tray_menu(self) -> None:
+        data = self._tray_metrics
+
+        # CPU
+        cpu_list: list[float] = data.get("cpu", [])
+        if cpu_list:
+            avg = sum(cpu_list) / len(cpu_list)
+            self._tray_cpu_action.setText(f"CPU: {avg:.0f}%")
+
+        # Memory
+        mem = data.get("memory", {})
+        total = mem.get("total", 0)
+        used = mem.get("used", 0)
+        if total > 0:
+            pct = used * 100 / total
+            self._tray_mem_action.setText(
+                f"RAM: {pct:.0f}% ({self._fmt_bytes_short(used)} / {self._fmt_bytes_short(total)})"
+            )
+
+        # Temperatures
+        sensors: list[dict] = data.get("temperatures", [])
+        # Remove old temperature actions
+        for action in self._tray_temp_actions:
+            self._tray_menu.removeAction(action)
+        self._tray_temp_actions.clear()
+
+        insert_before = self._tray_temp_end_separator
+        for sensor in sensors:
+            temp = sensor["temp"]
+            label = sensor["label"]
+            text = f"{label}: {temp:.1f}\u00B0C"
+            action = QAction(text, self)
+            action.setEnabled(False)
+            self._tray_menu.insertAction(insert_before, action)
+            self._tray_temp_actions.append(action)
+
+    # ── Window lifecycle ─────────────────────────────────────
+
+    def closeEvent(self, event) -> None:
+        if getattr(self, "_really_quit", False):
+            self._tray.hide()
+            self._poll_timer.stop()
+            self._system_ctrl.stop_metrics_polling(wait=True)
+            self._conn_manager.shutdown()
+            from app.models.database import Database
+            Database.instance().close()
+            super().closeEvent(event)
+        else:
+            event.ignore()
+            self.hide()
+            # Keep metrics polling active for tray menu updates
+            self._system_ctrl.start_metrics_polling()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        # Restore normal polling behavior based on active view
+        if self._stack.currentIndex() != 0:
+            self._system_ctrl.stop_metrics_polling()

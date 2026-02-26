@@ -52,6 +52,7 @@ class SystemMetricsWorker(QThread):
                 disks = self._sys.get_disk_usage()
                 network = self._sys.get_network_stats()
                 uptime = self._sys.get_uptime()
+                temperatures = self._sys.get_temperatures()
 
                 self.metrics_update.emit({
                     "cpu": cpu,
@@ -59,6 +60,7 @@ class SystemMetricsWorker(QThread):
                     "disks": disks,
                     "network": network,
                     "uptime": uptime,
+                    "temperatures": temperatures,
                 })
             except Exception as e:
                 logger.warning("Metrics poll error: %s", e)

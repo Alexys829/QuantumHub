@@ -283,6 +283,134 @@ class SystemService:
             ips[iface].append(addr)
         return ips
 
+    # ── Temperatures ─────────────────────────────────────────
+
+    def get_temperatures(self) -> list[dict]:
+        """Return temperature readings from hwmon sysfs (or thermal zones as fallback).
+
+        Each dict: {chip, label, temp, high, crit}.
+        """
+        sensors = self._read_hwmon_temps()
+        if not sensors:
+            sensors = self._read_thermal_zones()
+        sensors.extend(self._read_nvidia_gpu_temp())
+        return sensors
+
+    def _read_hwmon_temps(self) -> list[dict]:
+        cmd = (
+            'for h in /sys/class/hwmon/hwmon*/; do '
+            'name=$(cat "$h/name" 2>/dev/null); '
+            'for f in "$h"/temp*_input; do '
+            '[ -f "$f" ] || continue; '
+            'val=$(cat "$f" 2>/dev/null); '
+            'label=$(cat "${f/_input/_label}" 2>/dev/null); '
+            'high=$(cat "${f/_input/_max}" 2>/dev/null); '
+            'crit=$(cat "${f/_input/_crit}" 2>/dev/null); '
+            'echo "$name|$label|$val|$high|$crit"; '
+            'done; done 2>/dev/null'
+        )
+        out, _, rc = self._run_command(cmd, timeout=10)
+        sensors: list[dict] = []
+        if rc != 0:
+            return sensors
+        for line in out.splitlines():
+            parts = line.split("|")
+            if len(parts) < 3:
+                continue
+            chip = parts[0].strip()
+            label = parts[1].strip()
+            raw_temp = parts[2].strip()
+            raw_high = parts[3].strip() if len(parts) > 3 else ""
+            raw_crit = parts[4].strip() if len(parts) > 4 else ""
+            if not raw_temp:
+                continue
+            try:
+                temp_c = int(raw_temp) / 1000.0
+            except ValueError:
+                continue
+            if temp_c <= 0:
+                continue
+            high: float | None = None
+            crit: float | None = None
+            if raw_high:
+                try:
+                    high = int(raw_high) / 1000.0
+                except ValueError:
+                    pass
+            if raw_crit:
+                try:
+                    crit = int(raw_crit) / 1000.0
+                except ValueError:
+                    pass
+            sensors.append({
+                "chip": chip,
+                "label": label or chip,
+                "temp": round(temp_c, 1),
+                "high": round(high, 1) if high is not None else None,
+                "crit": round(crit, 1) if crit is not None else None,
+            })
+        return sensors
+
+    def _read_thermal_zones(self) -> list[dict]:
+        cmd = (
+            'for z in /sys/class/thermal/thermal_zone*/; do '
+            'type=$(cat "$z/type" 2>/dev/null); '
+            'temp=$(cat "$z/temp" 2>/dev/null); '
+            'echo "$type|$temp"; '
+            'done 2>/dev/null'
+        )
+        out, _, rc = self._run_command(cmd, timeout=10)
+        sensors: list[dict] = []
+        if rc != 0:
+            return sensors
+        for line in out.splitlines():
+            parts = line.split("|")
+            if len(parts) < 2:
+                continue
+            zone_type = parts[0].strip()
+            raw_temp = parts[1].strip()
+            if not raw_temp:
+                continue
+            try:
+                temp_c = int(raw_temp) / 1000.0
+            except ValueError:
+                continue
+            if temp_c <= 0:
+                continue
+            sensors.append({
+                "chip": "thermal_zone",
+                "label": zone_type or "Unknown",
+                "temp": round(temp_c, 1),
+                "high": None,
+                "crit": None,
+            })
+        return sensors
+
+    def _read_nvidia_gpu_temp(self) -> list[dict]:
+        cmd = "nvidia-smi --query-gpu=name,temperature.gpu --format=csv,noheader,nounits 2>/dev/null"
+        out, _, rc = self._run_command(cmd, timeout=5)
+        sensors: list[dict] = []
+        if rc != 0:
+            return sensors
+        for line in out.splitlines():
+            parts = line.split(",")
+            if len(parts) < 2:
+                continue
+            gpu_name = parts[0].strip()
+            raw_temp = parts[1].strip()
+            try:
+                temp_c = float(raw_temp)
+            except ValueError:
+                continue
+            sensors.append({
+                "chip": "nvidia",
+                "label": gpu_name or "NVIDIA GPU",
+                "temp": round(temp_c, 1),
+                "high": 83.0,
+                "crit": 90.0,
+            })
+        return sensors
+
     # ── Processes ─────────────────────────────────────────────
 
     def get_processes(self) -> list[dict]:
